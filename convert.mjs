@@ -9,10 +9,81 @@ import { createClient } from "@supabase/supabase-js";
 import { exec } from "child_process";
 import "dotenv/config";
 import fs from "fs";
+import readline from "readline";
 import { Readable } from "stream";
 import { promisify } from "util";
 
 const execAsync = promisify(exec);
+
+// ✅ 국가 코드별 설정 (추가/수정 여기서만!)
+const COUNTRY_CONFIGS = {
+  ko: {
+    label: "한국",
+    r2Prefix: "episodes-audio/m4a",
+    languageFilter: ["ko"],
+  },
+  en: {
+    label: "북미",
+    r2Prefix: "en-episodes-audio/m4a",
+    languageFilter: ["en"],
+  },
+  de: {
+    label: "독일",
+    r2Prefix: "de-episodes-audio/m4a",
+    languageFilter: ["de"],
+  },
+  jp: {
+    label: "일본",
+    r2Prefix: "jp_episodes-audio/m4a",
+    languageFilter: ["jp"],
+  },
+  all: {
+    label: "전체",
+    r2Prefix: null, // 국가별로 동적 처리
+    languageFilter: null, // 필터 없음
+  },
+};
+
+async function selectCountry() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    console.log("\n🌍 변환할 국가를 선택하세요:\n");
+    const keys = Object.keys(COUNTRY_CONFIGS);
+    keys.forEach((key, i) => {
+      console.log(
+        `  [${i + 1}] ${key.padEnd(5)} - ${COUNTRY_CONFIGS[key].label}`,
+      );
+    });
+    console.log();
+
+    rl.question("번호 또는 코드 입력 (예: 1 또는 de): ", (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+
+      // 번호로 선택
+      const num = parseInt(trimmed, 10);
+      if (!isNaN(num) && num >= 1 && num <= keys.length) {
+        resolve(keys[num - 1]);
+        return;
+      }
+
+      // 코드로 선택
+      if (COUNTRY_CONFIGS[trimmed]) {
+        resolve(trimmed);
+        return;
+      }
+
+      console.error(
+        `\n❌ 유효하지 않은 입력: "${trimmed}". 프로그램을 종료합니다.`,
+      );
+      process.exit(1);
+    });
+  });
+}
 
 const r2 = new S3Client({
   region: "auto",
@@ -37,7 +108,17 @@ async function streamToFile(stream, filePath) {
   });
 }
 
-async function convertTrack(track) {
+async function convertTrack(track, config) {
+  // "all" 모드일 때 트랙의 language 필드에서 prefix 동적 결정
+  let r2Prefix = config.r2Prefix;
+  if (!r2Prefix) {
+    const lang = Array.isArray(track.language)
+      ? track.language[0]
+      : track.language;
+    const langConfig = COUNTRY_CONFIGS[lang];
+    r2Prefix = langConfig ? langConfig.r2Prefix : `${lang}-episodes-audio/m4a`;
+  }
+
   const tmpDir = `./tmp/${track.id}`;
   fs.mkdirSync(tmpDir, { recursive: true });
 
@@ -47,7 +128,6 @@ async function convertTrack(track) {
   const dubbingM4aPath = `${tmpDir}/dubbing_output.m4a`;
 
   try {
-    // 1. R2에서 MP3 다운로드 (key 추출)
     const urlObj = new URL(track.audio_file);
     const key = decodeURIComponent(urlObj.pathname.slice(1));
     console.log(`⏳ [${track.id}] 다운로드 중...`);
@@ -57,29 +137,24 @@ async function convertTrack(track) {
     );
     await streamToFile(Body, mp3Path);
 
-    // 2. MP3 → M4A 변환 (-vn: 커버 이미지 등 비디오 스트림 무시)
     console.log(`⏳ [${track.id}] 변환 중...`);
     await execAsync(
       `ffmpeg -y -i "${mp3Path}" -vn -c:a aac -b:a 128k "${m4aPath}"`,
     );
 
-    // 3. 변환된 M4A를 R2에 업로드
     console.log(`⏳ [${track.id}] 업로드 중...`);
     await r2.send(
       new PutObjectCommand({
         Bucket: process.env.R2_BUCKET,
-        // ✏️ [국가 변경 1/3] R2 저장 경로 변경 (예: en-episodes-audio/m4a/)
-        Key: `de-episodes-audio/m4a/${track.id}.m4a`,
+        Key: `${r2Prefix}/${track.id}.m4a`,
         Body: fs.readFileSync(m4aPath),
         ContentType: "audio/mp4",
       }),
     );
 
-    // ✏️ [국가 변경 2/3] Supabase에 저장될 URL 경로 변경 (위 Key와 동일하게)
-    const newUrl = `${process.env.R2_PUBLIC_URL}/de-episodes-audio/m4a/${track.id}.m4a`;
+    const newUrl = `${process.env.R2_PUBLIC_URL}/${r2Prefix}/${track.id}.m4a`;
     const updateData = { audio_file: newUrl };
 
-    // 4. audioFile_dubbing 변환 (있을 때만)
     if (track.audioFile_dubbing) {
       const dubbingUrlObj = new URL(track.audioFile_dubbing);
       const dubbingKey = decodeURIComponent(dubbingUrlObj.pathname.slice(1));
@@ -97,20 +172,20 @@ async function convertTrack(track) {
       await execAsync(
         `ffmpeg -y -i "${dubbingMp3Path}" -vn -c:a aac -b:a 128k "${dubbingM4aPath}"`,
       );
+
       console.log(`⏳ [${track.id}] 더빙 업로드 중...`);
       await r2.send(
         new PutObjectCommand({
           Bucket: process.env.R2_BUCKET,
-          Key: `de-episodes-audio/m4a/${track.id}_dubbing.m4a`,
+          Key: `${r2Prefix}/${track.id}_dubbing.m4a`,
           Body: fs.readFileSync(dubbingM4aPath),
           ContentType: "audio/mp4",
         }),
       );
 
-      updateData.audioFile_dubbing = `${process.env.R2_PUBLIC_URL}/de-episodes-audio/m4a/${track.id}_dubbing.m4a`;
+      updateData.audioFile_dubbing = `${process.env.R2_PUBLIC_URL}/${r2Prefix}/${track.id}_dubbing.m4a`;
     }
 
-    // 5. Supabase URL 업데이트
     await supabase.from("episodes").update(updateData).eq("id", track.id);
     console.log(`✅ [${track.id}] 성공`);
   } catch (e) {
@@ -121,12 +196,22 @@ async function convertTrack(track) {
 }
 
 async function main() {
-  const { data: tracks, error } = await supabase
+  const countryCode = await selectCountry();
+  const config = COUNTRY_CONFIGS[countryCode];
+
+  console.log(`\n✅ 선택된 언어: ${config.label} (${countryCode})\n`);
+
+  // Supabase 쿼리 구성
+  let query = supabase
     .from("episodes")
-    .select("id, audio_file, audioFile_dubbing")
-    .or("audio_file.like.%.mp3,audioFile_dubbing.like.%.mp3")
-    // ✏️ [국가 변경 3/3] 처리할 언어 코드 변경 (예: 영어: ['en'], 전체: 이 줄 삭제)
-    .contains("language", ["de"]);
+    .select("id, audio_file, audioFile_dubbing, language")
+    .or("audio_file.like.%.mp3,audioFile_dubbing.like.%.mp3");
+
+  if (config.languageFilter) {
+    query = query.contains("language", config.languageFilter);
+  }
+
+  const { data: tracks, error } = await query;
 
   if (error) {
     console.error("Supabase 에러:", error);
@@ -145,13 +230,13 @@ async function main() {
   let failed = 0;
   console.log(`총 ${total}개 변환 시작\n`);
 
-  const CONCURRENCY = 5; // 동시에 처리할 개수
+  const CONCURRENCY = 5;
   const queue = [...tracks];
 
   async function worker() {
     while (queue.length > 0) {
       const track = queue.shift();
-      const result = await convertTrack(track)
+      const result = await convertTrack(track, config)
         .then(() => "ok")
         .catch(() => "fail");
       if (result === "ok") done++;
