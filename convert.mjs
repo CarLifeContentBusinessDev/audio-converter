@@ -190,6 +190,7 @@ async function convertTrack(track, config) {
     console.log(`✅ [${track.id}] 성공`);
   } catch (e) {
     console.error(`❌ [${track.id}] 실패:`, e.message);
+    throw e;
   } finally {
     fs.rmSync(tmpDir, { recursive: true });
   }
@@ -236,11 +237,13 @@ async function main() {
   async function worker() {
     while (queue.length > 0) {
       const track = queue.shift();
-      const result = await convertTrack(track, config)
-        .then(() => "ok")
-        .catch(() => "fail");
-      if (result === "ok") done++;
-      else failed++;
+      try {
+        await convertTrack(track, config);
+        done++;
+      } catch {
+        failed++;
+      }
+
       const percent = Math.round(((done + failed) / total) * 100);
       console.log(
         `📊 진행률: ${done + failed}/${total} (${percent}%) | ✅ ${done} 완료 | ❌ ${failed} 실패\n`,
