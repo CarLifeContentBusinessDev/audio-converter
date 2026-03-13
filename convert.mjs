@@ -137,9 +137,19 @@ async function convertTrack(track, config) {
     );
     await streamToFile(Body, mp3Path);
 
-    console.log(`⏳ [${track.id}] 변환 중...`);
+    // 원본 mp3 비트레이트 추출
+    console.log(`⏳ [${track.id}] 비트레이트 확인 중...`);
+    const bitrateResult = await execAsync(
+      `ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "${mp3Path}"`,
+    );
+    let bitrate = parseInt(bitrateResult.stdout.trim(), 10);
+    if (isNaN(bitrate) || bitrate < 32000) {
+      bitrate = 128000; // fallback: 128kbps
+    }
+    const bitrateKbps = Math.round(bitrate / 1000);
+    console.log(`⏳ [${track.id}] 변환 중... (비트레이트: ${bitrateKbps}kbps)`);
     await execAsync(
-      `ffmpeg -y -i "${mp3Path}" -vn -c:a aac -b:a 128k "${m4aPath}"`,
+      `ffmpeg -y -i "${mp3Path}" -vn -c:a aac -b:a ${bitrateKbps}k "${m4aPath}"`,
     );
 
     console.log(`⏳ [${track.id}] 업로드 중...`);
@@ -168,9 +178,21 @@ async function convertTrack(track, config) {
       );
       await streamToFile(dubbingBody, dubbingMp3Path);
 
-      console.log(`⏳ [${track.id}] 더빙 변환 중...`);
+      // 더빙 mp3 비트레이트 추출
+      console.log(`⏳ [${track.id}] 더빙 비트레이트 확인 중...`);
+      const dubbingBitrateResult = await execAsync(
+        `ffprobe -v error -select_streams a:0 -show_entries stream=bit_rate -of default=noprint_wrappers=1:nokey=1 "${dubbingMp3Path}"`,
+      );
+      let dubbingBitrate = parseInt(dubbingBitrateResult.stdout.trim(), 10);
+      if (isNaN(dubbingBitrate) || dubbingBitrate < 32000) {
+        dubbingBitrate = 128000;
+      }
+      const dubbingBitrateKbps = Math.round(dubbingBitrate / 1000);
+      console.log(
+        `⏳ [${track.id}] 더빙 변환 중... (비트레이트: ${dubbingBitrateKbps}kbps)`,
+      );
       await execAsync(
-        `ffmpeg -y -i "${dubbingMp3Path}" -vn -c:a aac -b:a 128k "${dubbingM4aPath}"`,
+        `ffmpeg -y -i "${dubbingMp3Path}" -vn -c:a aac -b:a ${dubbingBitrateKbps}k "${dubbingM4aPath}"`,
       );
 
       console.log(`⏳ [${track.id}] 더빙 업로드 중...`);
@@ -211,6 +233,11 @@ async function main() {
   if (config.languageFilter) {
     query = query.contains("language", config.languageFilter);
   }
+
+  // let query = supabase
+  //   .from("episodes")
+  //   .select("id, audio_file, audioFile_dubbing, language")
+  //   .eq("id", 1756); // 특정 id만 조회
 
   const { data: tracks, error } = await query;
 
