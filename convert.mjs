@@ -225,19 +225,29 @@ async function main() {
   console.log(`\n✅ 선택된 언어: ${config.label} (${countryCode})\n`);
 
   // Supabase 쿼리 구성
-  let query = supabase
-    .from("episodes")
-    .select("id, audio_file, audioFile_dubbing, language")
-    .or("audio_file.like.%.mp3,audioFile_dubbing.like.%.mp3");
-
-  if (config.languageFilter) {
-    query = query.contains("language", config.languageFilter);
-  }
-
+  // 쿼리 1 - audio_file 또는 audioFile_dubbing이 .mp3로 끝나는 레코드 조회
   // let query = supabase
   //   .from("episodes")
   //   .select("id, audio_file, audioFile_dubbing, language")
-  //   .eq("id", 1756); // 특정 id만 조회
+  //   .or("audio_file.like.%.mp3,audioFile_dubbing.like.%.mp3");
+
+  // if (config.languageFilter) {
+  //   query = query.contains("language", config.languageFilter);
+  // }
+
+  // 쿼리 2 - 특정 id 하나 조회
+  // let query = supabase
+  //   .from("episodes")
+  //   .select("id, audio_file, audioFile_dubbing, language")
+  //   .eq("id", 254); // 특정 episode id만 조회
+
+  // 쿼리 3 - 특정 id 배열 조회
+  const ids = [254, 318, 273, 319, 486, 483, 481, 480]; // 조회하고 싶은 ID 배열
+
+  let query = supabase
+    .from("episodes")
+    .select("id, audio_file, audioFile_dubbing, language")
+    .in("id", ids); // 배열을 그대로 전달
 
   const { data: tracks, error } = await query;
 
