@@ -2,6 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 import "dotenv/config";
+import readline from "readline";
 
 // Supabase 설정
 const supabase = createClient(
@@ -15,10 +16,70 @@ const PAGE_SIZE = 1000;
 const RETRY_COUNT = 2; // 429 발생 시 재시도 횟수
 const DELAY_MS = 300; // 요청 사이의 기본 대기 시간 (0.3초)
 
+// 국가(언어)별 검사 대상 설정
+const COUNTRY_CONFIGS = {
+  ko: { label: "한국", languageFilter: ["ko"] },
+  en: { label: "북미", languageFilter: ["en"] },
+  de: { label: "독일", languageFilter: ["de"] },
+  jp: { label: "일본", languageFilter: ["jp"] },
+  all: { label: "전체", languageFilter: null },
+};
+
 /**
  * ⏳ 지연 함수
  */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function selectCountry() {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    console.log("\n🌍 검사할 국가를 선택하세요:\n");
+    const keys = Object.keys(COUNTRY_CONFIGS);
+    keys.forEach((key, i) => {
+      console.log(
+        `   [${i + 1}] ${key.padEnd(5)} - ${COUNTRY_CONFIGS[key].label}`,
+      );
+    });
+    console.log();
+
+    rl.question("번호 또는 코드 입력 (예: 1 또는 de): ", (answer) => {
+      rl.close();
+      const trimmed = answer.trim();
+
+      const num = parseInt(trimmed, 10);
+      if (!isNaN(num) && num >= 1 && num <= keys.length) {
+        resolve(keys[num - 1]);
+        return;
+      }
+
+      if (COUNTRY_CONFIGS[trimmed]) {
+        resolve(trimmed);
+        return;
+      }
+
+      console.error(
+        `\n❌ 유효하지 않은 입력: "${trimmed}". 프로그램을 종료합니다.`,
+      );
+      process.exit(1);
+    });
+  });
+}
+
+function trackMatchesCountry(track, languageFilter) {
+  if (!languageFilter) return true;
+
+  const normalizedLanguages = Array.isArray(track.language)
+    ? track.language
+    : typeof track.language === "string"
+      ? [track.language]
+      : [];
+
+  return languageFilter.some((lang) => normalizedLanguages.includes(lang));
+}
 
 /**
  * 🔍 개선된 URL 체크 함수 (재시도 로직 포함)
@@ -63,9 +124,10 @@ async function checkUrl(url, retryLeft = RETRY_COUNT) {
 }
 
 async function main() {
-  console.log(
-    "🚀 [전수 조사 시작] 재시도 로직 및 지연 시간이 적용된 모드입니다.",
-  );
+  const countryCode = await selectCountry();
+  const countryConfig = COUNTRY_CONFIGS[countryCode];
+
+  console.log(`\n🚀 [전수 조사 시작] 대상: ${countryConfig.label}`);
 
   let allTracks = [];
   let from = 0;
@@ -94,7 +156,19 @@ async function main() {
     }
   }
 
-  const total = allTracks.length;
+  const filteredTracks = allTracks.filter((track) =>
+    trackMatchesCountry(track, countryConfig.languageFilter),
+  );
+
+  const total = filteredTracks.length;
+
+  if (total === 0) {
+    console.log(
+      `\nℹ️ 선택한 대상(${countryConfig.label})에 검사할 트랙이 없습니다.`,
+    );
+    return;
+  }
+
   console.log(
     `\n✅ 총 ${total}개의 트랙 검사를 시작합니다. (동시 작업수: ${CONCURRENCY})\n`,
   );
@@ -102,7 +176,7 @@ async function main() {
   // --- 2단계: 오디오 체크 실행 ---
   const deadTracks = [];
   let checkedCount = 0;
-  const queue = [...allTracks];
+  const queue = [...filteredTracks];
 
   async function worker() {
     while (queue.length > 0) {
@@ -151,6 +225,7 @@ async function main() {
   console.log("\n\n" + "=".repeat(75));
   console.log("🏁 전수 조사 완료 리포트");
   console.log("=".repeat(75));
+  console.log(`🌍 검사 대상: ${countryConfig.label}`);
   console.log(`▶️  전체 대상: ${total}개`);
   console.log(`✅ 정상 트랙: ${total - deadTracks.length}개`);
   console.log(`❌ 재생 불가: ${deadTracks.length}개`);
