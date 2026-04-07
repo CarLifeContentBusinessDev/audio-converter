@@ -74,6 +74,7 @@ async function selectTable() {
   return new Promise((resolve) => {
     console.log("\n📊 검사할 테이블을 선택하세요:\n");
     const keys = Object.keys(TABLE_CONFIGS);
+    console.log("   [0] 전체 테이블 검사");
     keys.forEach((key, i) => {
       const fields = TABLE_CONFIGS[key].imageFields.join(", ");
       console.log(
@@ -82,26 +83,34 @@ async function selectTable() {
     });
     console.log();
 
-    rl.question("번호 또는 테이블명 입력 (예: 1 또는 episodes): ", (answer) => {
-      rl.close();
-      const trimmed = answer.trim();
+    rl.question(
+      "번호 또는 테이블명 입력 (예: 0, 1 또는 episodes): ",
+      (answer) => {
+        rl.close();
+        const trimmed = answer.trim();
 
-      const num = parseInt(trimmed, 10);
-      if (!isNaN(num) && num >= 1 && num <= keys.length) {
-        resolve(keys[num - 1]);
-        return;
-      }
+        if (trimmed === "0" || trimmed.toLowerCase() === "all") {
+          resolve("__ALL__");
+          return;
+        }
 
-      if (TABLE_CONFIGS[trimmed]) {
-        resolve(trimmed);
-        return;
-      }
+        const num = parseInt(trimmed, 10);
+        if (!isNaN(num) && num >= 1 && num <= keys.length) {
+          resolve(keys[num - 1]);
+          return;
+        }
 
-      console.error(
-        `\n❌ 유효하지 않은 입력: "${trimmed}". 프로그램을 종료합니다.`,
-      );
-      process.exit(1);
-    });
+        if (TABLE_CONFIGS[trimmed]) {
+          resolve(trimmed);
+          return;
+        }
+
+        console.error(
+          `\n❌ 유효하지 않은 입력: "${trimmed}". 프로그램을 종료합니다.`,
+        );
+        process.exit(1);
+      },
+    );
   });
 }
 
@@ -208,8 +217,7 @@ async function checkImageUrl(url, retryLeft = RETRY_COUNT) {
   }
 }
 
-async function main() {
-  const tableName = await selectTable();
+async function inspectTable(tableName, includeNull) {
   const tableConfig = TABLE_CONFIGS[tableName];
   const displayField = await resolveDisplayField(tableName);
 
@@ -219,10 +227,6 @@ async function main() {
     `🧾 제목 표시 컬럼: ${displayField ? displayField : "없음(미표시)"}`,
   );
 
-  const includeNull = await selectIncludeNull();
-  console.log(
-    `\n${includeNull ? "✅" : "❌"} Null 값 포함: ${includeNull ? "예" : "아니오"}`,
-  );
   let allItems = [];
   let from = 0;
   let hasMore = true;
@@ -261,7 +265,14 @@ async function main() {
     console.log(
       `\nℹ️ 선택한 테이블(${tableConfig.label})에 데이터가 없습니다.`,
     );
-    return;
+    return {
+      tableName,
+      tableLabel: tableConfig.label,
+      displayField,
+      imageFields: tableConfig.imageFields,
+      total: 0,
+      deadItems: [],
+    };
   }
 
   console.log(
@@ -298,8 +309,11 @@ async function main() {
       // includeNull이 true면 null이 있어도 무시
       if (hasAnyError || (!includeNull && missingFields.length > 0)) {
         const record = {
+          table: tableName,
+          tableLabel: tableConfig.label,
           id: item.id,
           title: displayField ? (item[displayField] ?? "-") : "-",
+          imageFields: tableConfig.imageFields,
         };
 
         // 각 필드별 상태 추가
@@ -316,8 +330,9 @@ async function main() {
       checkedCount++;
       if (checkedCount % 10 === 0 || checkedCount === total) {
         const percent = Math.round((checkedCount / total) * 100);
+        const lineEnd = checkedCount === total ? "\n" : "\r";
         process.stdout.write(
-          `⏳ 진행: ${checkedCount}/${total} (${percent}%) | 찾은 오류: ${deadItems.length}개\r`,
+          `⏳ 진행: ${checkedCount}/${total} (${percent}%) | 찾은 오류: ${deadItems.length}개${lineEnd}`,
         );
       }
     }
@@ -327,46 +342,108 @@ async function main() {
   await Promise.all(Array.from({ length: CONCURRENCY }, worker));
 
   // --- 3단계: 리포트 출력 ---
+  return {
+    tableName,
+    tableLabel: tableConfig.label,
+    displayField,
+    imageFields: tableConfig.imageFields,
+    total,
+    deadItems,
+  };
+}
+
+function printDetailRows(items, includeTable = false) {
+  const tableData = items.slice(0, 50).map((item) => {
+    const titleText = String(item.title ?? "-");
+    const row = {
+      ID: item.id,
+      제목: titleText.length > 28 ? `${titleText.slice(0, 28)}...` : titleText,
+    };
+
+    if (includeTable) {
+      row["테이블"] = item.table;
+    }
+
+    for (const field of item.imageFields) {
+      const status = item[`${field}_status`];
+      const type = item[`${field}_type`];
+      if (status !== "-" || type !== "-") {
+        row[field] = `${status !== "-" ? status : "OK"}(${type})`;
+      } else {
+        row[field] = "정상";
+      }
+    }
+
+    row["누락"] = item.missing;
+    return row;
+  });
+
+  console.table(tableData);
+}
+
+async function main() {
+  const selectedTable = await selectTable();
+  const includeNull = await selectIncludeNull();
+  const allTableNames = Object.keys(TABLE_CONFIGS);
+  const targetTables =
+    selectedTable === "__ALL__" ? allTableNames : [selectedTable];
+
+  console.log(
+    `\n${includeNull ? "✅" : "❌"} Null 값 포함: ${includeNull ? "예" : "아니오"}`,
+  );
+  console.log(
+    `🎯 검사 대상: ${
+      selectedTable === "__ALL__"
+        ? `전체(${targetTables.length}개 테이블)`
+        : selectedTable
+    }`,
+  );
+
+  const results = [];
+  for (const tableName of targetTables) {
+    const result = await inspectTable(tableName, includeNull);
+    results.push(result);
+  }
+
+  const totalCount = results.reduce((sum, r) => sum + r.total, 0);
+  const allDeadItems = results.flatMap((r) => r.deadItems);
+  const isAllMode = selectedTable === "__ALL__";
+
   console.log("\n\n" + "=".repeat(100));
   console.log("🏁 이미지 전수 조사 완료 리포트");
   console.log("=".repeat(100));
-  console.log(`📊 검사 테이블: ${tableConfig.label}`);
+  console.log(`📊 검사 모드: ${isAllMode ? "전체 테이블" : "단일 테이블"}`);
   console.log(`🔍 Null 값 포함: ${includeNull ? "예" : "아니오"}`);
-  console.log(
-    `🧾 제목 표시 컬럼: ${displayField ? displayField : "없음(미표시)"}`,
-  );
-  console.log(`📋 검사 필드: ${tableConfig.imageFields.join(", ")}`);
-  console.log(`▶️  전체 항목: ${total}개`);
-  console.log(`✅ 정상 항목: ${total - deadItems.length}개`);
-  console.log(`❌ 오류 발견: ${deadItems.length}개`);
+  console.log(`▶️  전체 항목: ${totalCount}개`);
+  console.log(`✅ 정상 항목: ${totalCount - allDeadItems.length}개`);
+  console.log(`❌ 오류 발견: ${allDeadItems.length}개`);
   console.log("=".repeat(100));
 
-  if (deadItems.length > 0) {
-    console.log("\n[🚨 오류 상세 리스트 (상위 50개)]");
-    const tableData = deadItems.slice(0, 50).map((item) => {
-      const titleText = String(item.title ?? "-");
-      const row = {
-        ID: item.id,
-        제목:
-          titleText.length > 28 ? `${titleText.slice(0, 28)}...` : titleText,
-      };
+  if (isAllMode) {
+    console.log("\n[📚 테이블별 집계]");
+    const summaryRows = results.map((r) => ({
+      테이블: r.tableName,
+      라벨: r.tableLabel,
+      전체: r.total,
+      정상: r.total - r.deadItems.length,
+      오류: r.deadItems.length,
+    }));
+    console.table(summaryRows);
+  } else if (results[0]) {
+    console.log(`📌 검사 테이블: ${results[0].tableLabel}`);
+    console.log(
+      `🧾 제목 표시 컬럼: ${
+        results[0].displayField ? results[0].displayField : "없음(미표시)"
+      }`,
+    );
+    console.log(`📋 검사 필드: ${results[0].imageFields.join(", ")}`);
+  }
 
-      // 각 필드별 상태와 형식 추가
-      for (const field of tableConfig.imageFields) {
-        const status = item[`${field}_status`];
-        const type = item[`${field}_type`];
-        if (status !== "-" || type !== "-") {
-          row[field] = `${status !== "-" ? status : "OK"}(${type})`;
-        } else {
-          row[field] = "정상";
-        }
-      }
-
-      row["누락"] = item.missing;
-      return row;
-    });
-
-    console.table(tableData);
+  if (allDeadItems.length > 0) {
+    console.log(
+      `\n[🚨 오류 상세 리스트 (상위 50개)${isAllMode ? " - 테이블 포함" : ""}]`,
+    );
+    printDetailRows(allDeadItems, isAllMode);
   } else {
     console.log("\n🎉 모든 이미지 파일이 정상입니다!");
   }
