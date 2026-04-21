@@ -1,29 +1,39 @@
 # audio-converter
 
-R2(Cloudflare)와 Supabase 데이터를 대상으로 오디오 변환/점검, 이미지 URL 점검을 수행하는 유틸리티 모음입니다.
+R2(Cloudflare)와 Supabase 데이터를 대상으로 오디오/이미지 변환, URL 점검, 정리 작업을 수행하는 스크립트 모음입니다.
 
-## 포함된 스크립트
+## 프로젝트 구조
 
-- `convert.mjs`
-  - `episodes` 테이블의 오디오 URL(mp3)을 m4a로 변환
-  - R2에 업로드 후 Supabase URL(`audio_file`, `audioFile_dubbing`) 업데이트
-  - 국가별(ko/en/de/jp/all) 처리, 전체/특정 ID 처리 지원
-- `check-audio.js`
-  - `episodes` 오디오 URL 접근 가능 여부 전수 점검
-  - 메인 오디오 + 더빙 오디오 상태를 함께 확인
-- `check-image.js`
-  - 여러 테이블의 이미지 URL 전수 점검
-  - 상태코드 + 이미지 Content-Type 확인, null 포함 여부 선택 가능
+- `script/pickle-web-demo/convert.mjs`
+  - episodes 오디오(mp3)를 m4a로 변환 후 R2 업로드, Supabase URL 업데이트
+- `script/pickle-web-demo/check-audio.js`
+  - episodes 오디오 URL 접근성 전수 점검
+- `script/pickle-web-demo/check-image.js`
+  - 주요 테이블 이미지 URL 전수 점검
+- `script/pickle-web-demo/cleanup-r2.mjs`
+  - R2 파일과 Supabase 참조를 비교해 정리(인터랙티브)
+- `script/pickle-web-demo/migrate-youtube-images.mjs`
+  - 외부(예: YouTube) 이미지 URL을 WebP로 변환 후 R2로 마이그레이션
+- `script/gongu/download-gongu-api.mjs`
+  - 공유마당 음원 API 기준 동기화(누락 다운로드/불필요 파일 삭제)
+- `script/gongu/check-missing.mjs`
+  - 공유마당 API 결과에서 중복 파일명을 점검
 
 ## 사전 준비
 
-### 1) ffmpeg 설치
+### 1) 의존성 설치
+
+```bash
+npm install
+```
+
+### 2) ffmpeg 설치 (오디오 변환 시 필수)
 
 ```bash
 # Windows
 winget install ffmpeg
 
-# Mac
+# macOS
 brew install ffmpeg
 ```
 
@@ -33,26 +43,24 @@ brew install ffmpeg
 ffmpeg -version
 ```
 
-### 2) 패키지 설치
-
-프로젝트 루트에서:
-
-```bash
-npm install
-```
-
 ### 3) .env 설정
 
-프로젝트 루트에 `.env` 파일을 만들고 아래 값을 설정하세요.
+프로젝트 루트에 `.env` 파일 생성:
 
 ```env
+# R2
 R2_ENDPOINT=https://xxxxx.r2.cloudflarestorage.com
 R2_ACCESS_KEY=...
 R2_SECRET_KEY=...
-R2_BUCKET=버킷이름
+R2_BUCKET=...
 R2_PUBLIC_URL=https://pub-xxxxx.r2.dev
+
+# Supabase
 SUPABASE_URL=https://xxxxx.supabase.co
 SUPABASE_SERVICE_KEY=...
+
+# Gongu API
+GONGU_API_KEY=...
 ```
 
 주의:
@@ -61,93 +69,85 @@ SUPABASE_SERVICE_KEY=...
 
 ## 실행 방법
 
-### 오디오 변환
+아래 명령은 모두 프로젝트 루트에서 실행합니다.
+
+### 1) 오디오 변환
 
 ```bash
-node convert.mjs
+node script/pickle-web-demo/convert.mjs
 ```
 
-실행 흐름:
+- 국가 선택: `ko`, `en`, `de`, `jp`, `all`
+- 모드 선택:
+  - `[1] 전체 변환 (mp3만)`
+  - `[2] 특정 에피소드 ID` (예: `254,318`)
+- 기본 변환 설정: AAC, 48k, 24kHz, mono, `+faststart`
 
-1. 변환 대상 국가 선택 (`ko`, `en`, `de`, `jp`, `all`)
-2. 변환 모드 선택
-   - `[1] 전체 변환 (mp3만)`
-   - `[2] 특정 에피소드 ID 입력` (예: `254,318`)
-
-동작 요약:
-
-- `audio_file` 또는 `audioFile_dubbing`이 `.mp3`인 항목을 대상으로 변환
-- 변환 옵션: AAC, 48k bitrate, 24k sample rate, mono, `+faststart`
-- 동시 변환 수: 3
-- 임시 파일은 `tmp/{id}`에 생성 후 작업 완료 시 삭제
-
-### 오디오 URL 점검
+### 2) 오디오 URL 점검
 
 ```bash
-node check-audio.js
+node script/pickle-web-demo/check-audio.js
 ```
-
-실행 흐름:
-
-1. 점검 대상 국가 선택 (`ko`, `en`, `de`, `jp`, `all`)
-2. 대상 데이터 로드 후 URL 접근성 검사
-
-동작 요약:
 
 - 점검 대상: `episodes.audio_file`, `episodes.audioFile_dubbing`
-- 상태코드 `200`, `206`, `416`을 정상으로 판정
-- `429` 발생 시 재시도 로직 적용
-- 결과 리포트(정상/오류 개수, 오류 상세 상위 100개) 출력
+- 정상 상태코드: `200`, `206`, `416`
+- `429` 응답 재시도 로직 포함
 
-### 이미지 URL 점검
+### 3) 이미지 URL 점검
 
 ```bash
-node check-image.js
+node script/pickle-web-demo/check-image.js
 ```
 
-실행 흐름:
+- 대상 테이블 선택 가능: `broadcastings`, `categories`, `episodes`, `programs`, `series`, `themes`, `all`
+- 이미지 Content-Type 검증 포함
+- null 값을 오류로 볼지 선택 가능
 
-1. 점검할 테이블 선택
-   - `broadcastings`, `categories`, `episodes`, `programs`, `series`, `themes`
-2. null 값 포함 여부 선택
+### 4) R2 정리
 
-동작 요약:
-
-- 상태코드 + `Content-Type`으로 이미지 유효성 판정
-- 점검 필드:
-  - `broadcastings`: `img_url`
-  - `categories`: `img_url`, `en_img_url`, `de_img_url`, `jp_img_url`
-  - `episodes`: `img_url`
-  - `programs`: `img_url`
-  - `series`: `img_url`
-  - `themes`: `img_url`
-- 결과 리포트(오류 상세 상위 50개) 출력
-
-## 국가 설정 확장
-
-새 국가를 추가할 때는 `convert.mjs`, `check-audio.js`의 `COUNTRY_CONFIGS`에 동일하게 추가하세요.
-
-예시 (`convert.mjs`):
-
-```js
-const COUNTRY_CONFIGS = {
-  // ...기존 설정
-  it: {
-    label: "이탈리아",
-    r2Prefix: "it-episodes-audio/m4a",
-    languageFilter: ["it"],
-  },
-};
+```bash
+node script/pickle-web-demo/cleanup-r2.mjs
 ```
 
-## 참고
+- R2 prefix별 파일을 수집
+- Supabase 참조 URL과 비교해 미참조 파일을 탐색/정리
 
-- 변환 중 강제 종료 시 `tmp` 폴더가 남을 수 있습니다.
+### 5) YouTube 이미지 마이그레이션
+
+```bash
+node script/pickle-web-demo/migrate-youtube-images.mjs
+```
+
+- 외부 이미지 다운로드 후 WebP 변환
+- 대상 크기(약 50KB) 기준으로 품질 조정
+- R2 업로드 후 `episodes.img_url` 업데이트
+
+### 6) 공유마당 음원 동기화
+
+```bash
+node script/gongu/download-gongu-api.mjs
+```
+
+- API 목록 기준으로 파일 폴더 동기화
+- 누락 파일 다운로드, API에 없는 파일 삭제
+
+### 7) 공유마당 제목 중복 점검
+
+```bash
+node check-missing.mjs
+```
+
+- API 결과에서 파일명 충돌(중복 제목) 확인
+
+## 운영 팁
+
+- 변환/점검 스크립트는 대량 데이터 처리 시 시간이 오래 걸릴 수 있습니다.
+- 작업 중 강제 종료되면 `tmp` 폴더가 남을 수 있습니다.
 
 ```bash
 # Windows PowerShell
 Remove-Item -Recurse -Force tmp
 
-# Mac / Linux
+# macOS / Linux
 rm -rf tmp
 ```
