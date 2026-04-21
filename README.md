@@ -1,4 +1,4 @@
-# audio-converter
+# Helper Scripts
 
 R2(Cloudflare)와 Supabase 데이터를 대상으로 오디오/이미지 변환, URL 점검, 정리 작업을 수행하는 스크립트 모음입니다.
 
